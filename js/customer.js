@@ -1903,6 +1903,43 @@ async function openBookingDetailModal(bookingId) {
       `}
     </div>
     
+    <!-- Payment History Section -->
+    ${booking.history && booking.history.length > 0 ? (() => {
+      const paymentHistory = booking.history.filter(h => h.action === 'payment_received' || h.action === 'payment_confirmed');
+      if (paymentHistory.length > 0) {
+        return `
+          <div class="summary-item" style="flex-direction: column; align-items: flex-start; margin-top: 1rem; padding: 1rem; background: #e8f5e9; border-radius: 8px; border: 1px solid #4CAF50;">
+            <span class="summary-label" style="margin-bottom: 0.75rem; font-weight: 600; color: #2e7d32;">📋 Payment History:</span>
+            <div style="width: 100%; display: flex; flex-direction: column; gap: 0.5rem;">
+              ${paymentHistory.map(entry => `
+                <div style="background: white; padding: 0.75rem; border-radius: 6px; border-left: 3px solid #4CAF50; font-size: 0.85rem;">
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                    <span style="font-weight: 600; color: #2e7d32;">${entry.action === 'payment_received' ? '💰 Payment Received' : '✅ Payment Confirmed'}</span>
+                    <span style="color: #666; font-size: 0.8rem;">${new Date(entry.timestamp).toLocaleString()}</span>
+                  </div>
+                  <div style="color: #555; margin-bottom: 0.25rem;">
+                    <strong>Amount:</strong> ${formatCurrency(entry.paymentAmount || 0)}
+                  </div>
+                  <div style="color: #555; margin-bottom: 0.25rem;">
+                    <strong>Method:</strong> ${entry.paymentMethod === 'payNow' ? '💳 Pay Now' : '⏰ Pay Later'}
+                  </div>
+                  ${entry.hasProofOfPayment ? `
+                    <div style="margin-top: 0.5rem;">
+                      <button onclick="window.openProofOfPaymentLightbox('${booking.id}')" 
+                        style="padding: 0.4rem 0.8rem; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.3rem;">
+                        👁️ View Proof
+                      </button>
+                    </div>
+                  ` : ''}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }
+      return '';
+    })() : ''}
+    
     ${priceBreakdownHtml}
     
     <div class="modal-actions">
@@ -2188,12 +2225,23 @@ window.handleProofOfPaymentUpload = async function(bookingId, input) {
 };
 
 // Remove proof of payment image
+// Protection flag for removing proof of payment
+let isRemovingProof = false;
+
 window.removeProofOfPayment = async function(bookingId) {
+  // Prevent duplicate clicks
+  if (isRemovingProof) {
+    console.log('[removeProofOfPayment] BLOCKED - Already in progress');
+    return;
+  }
+  
   const confirmed = typeof customAlert !== 'undefined' 
     ? await customAlert.confirm('Remove Payment Proof', 'Are you sure you want to remove the payment proof?')
     : confirm('Are you sure you want to remove the payment proof?');
   
   if (!confirmed) return;
+  
+  isRemovingProof = true;
   
   try {
     if (typeof showLoadingOverlay === 'function') {
@@ -2232,6 +2280,8 @@ window.removeProofOfPayment = async function(bookingId) {
   } catch (error) {
     console.error('[ProofOfPayment] Remove error:', error);
     if (typeof hideLoadingOverlay === 'function') hideLoadingOverlay();
+  } finally {
+    isRemovingProof = false;
   }
 };
 
@@ -2335,7 +2385,8 @@ let customerHistoryState = {
   page: 1,
   pageSize: 5,
   searchTerm: '',
-  sortOrder: 'desc'
+  sortOrder: 'desc',
+  recentActive: false  // Track if "Recent" button is active (toggle state)
 };
 
 async function renderCustomerBookingHistory() {
@@ -2388,7 +2439,7 @@ async function renderCustomerBookingHistory() {
   }
 
   // Apply sort order - sort by booking creation date
-  const sortOrder = customerHistoryState.sortOrder || 'desc';
+  const sortOrder = customerHistoryState.recentActive ? 'desc' : (customerHistoryState.sortOrder || 'desc');
   history.sort((a, b) => {
     const dateA = new Date(a.createdAt || a.date).getTime();
     const dateB = new Date(b.createdAt || b.date).getTime();
@@ -2420,10 +2471,13 @@ async function renderCustomerBookingHistory() {
               value="${customerHistoryState.searchTerm || ''}" onkeyup="searchCustomerHistory(this.value)">
           </div>
           <div style="display: flex; align-items: center; gap: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm); flex-wrap: wrap;">
+            <button class="btn btn-sm" style="background: ${customerHistoryState.recentActive ? '#007bff' : '#e0e0e0'}; color: ${customerHistoryState.recentActive ? 'white' : '#333'}; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 600;" onclick="toggleCustomerHistoryRecent()">
+              🕐 Recent
+            </button>
             <label style="font-size: 0.9rem; color: var(--gray-600); font-weight: 500;">Sort by:</label>
-            <select id="customerHistorySortOrder" class="form-select" style="width: auto; padding: 0.5rem;" onchange="filterCustomerHistory()">
-              <option value="desc" ${customerHistoryState.sortOrder === 'desc' ? 'selected' : ''}>Newest First</option>
-              <option value="asc" ${customerHistoryState.sortOrder === 'asc' ? 'selected' : ''}>Oldest First</option>
+            <select id="customerHistorySortOrder" class="form-select" style="width: auto; padding: 0.5rem; ${customerHistoryState.recentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="filterCustomerHistory()" ${customerHistoryState.recentActive ? 'disabled' : ''}>
+              <option value="desc" ${customerHistoryState.sortOrder === 'desc' ? 'selected' : ''}>⬇️ Newest First</option>
+              <option value="asc" ${customerHistoryState.sortOrder === 'asc' ? 'selected' : ''}>⬆️ Oldest First</option>
             </select>
           </div>
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
@@ -2458,10 +2512,13 @@ async function renderCustomerBookingHistory() {
             value="${customerHistoryState.searchTerm || ''}" onkeyup="searchCustomerHistory(this.value)">
         </div>
         <div style="display: flex; align-items: center; gap: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm); flex-wrap: wrap;">
+          <button class="btn btn-sm" style="background: ${customerHistoryState.recentActive ? '#007bff' : '#e0e0e0'}; color: ${customerHistoryState.recentActive ? 'white' : '#333'}; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 600;" onclick="toggleCustomerHistoryRecent()">
+            🕐 Recent
+          </button>
           <label style="font-size: 0.9rem; color: var(--gray-600); font-weight: 500;">Sort by:</label>
-          <select id="customerHistorySortOrder" class="form-select" style="width: auto; padding: 0.5rem;" onchange="filterCustomerHistory()">
-            <option value="desc" ${customerHistoryState.sortOrder === 'desc' ? 'selected' : ''}>Newest First</option>
-            <option value="asc" ${customerHistoryState.sortOrder === 'asc' ? 'selected' : ''}>Oldest First</option>
+          <select id="customerHistorySortOrder" class="form-select" style="width: auto; padding: 0.5rem; ${customerHistoryState.recentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="filterCustomerHistory()" ${customerHistoryState.recentActive ? 'disabled' : ''}>
+            <option value="desc" ${customerHistoryState.sortOrder === 'desc' ? 'selected' : ''}>⬇️ Newest First</option>
+            <option value="asc" ${customerHistoryState.sortOrder === 'asc' ? 'selected' : ''}>⬆️ Oldest First</option>
           </select>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
@@ -2627,7 +2684,7 @@ async function changeCustomerHistoryPage(newPage) {
   }
   if (!Array.isArray(bookings)) bookings = [];
 
-  const history = getBookingHistory().filter(h => {
+  const history = (await getBookingHistory()).filter(h => {
     const booking = bookings.find(b => b.id === h.bookingId);
     return booking && booking.userId === user.id;
   });
@@ -2649,11 +2706,19 @@ function filterCustomerHistory() {
   if (searchInput && sortOrder) {
     customerHistoryState.searchTerm = searchInput.value.toLowerCase();
     customerHistoryState.sortOrder = sortOrder.value;
+    customerHistoryState.recentActive = false; // Disable Recent when changing sort order
     customerHistoryState.page = 1;
     renderCustomerBookingHistory();
   }
 }
 window.filterCustomerHistory = filterCustomerHistory;
+
+// Toggle Recent button (on/off)
+window.toggleCustomerHistoryRecent = function () {
+  customerHistoryState.recentActive = !customerHistoryState.recentActive;
+  customerHistoryState.page = 1;
+  renderCustomerBookingHistory();
+};
 
 function formatCustomerHistoryAction(action = '') {
   const normalized = action.toLowerCase();

@@ -15,12 +15,14 @@ const adminState = {
   pendingPageSize: 5,
   pendingSortBy: 'date',       // Sort field: 'date', 'customer', 'total'
   pendingSortOrder: 'asc',     // Sort direction: 'asc', 'desc'
+  pendingRecentActive: false,  // Track if "Recent" button is active (toggle state)
 
   confirmedPage: 1,
   confirmedPageSize: 5,
   confirmedSortBy: 'date',
   confirmedSortOrder: 'asc',
   confirmedSearchTerm: '',
+  confirmedRecentActive: false,  // Track if "Recent" button is active (toggle state)
 
   // In Progress state
   inprogressPage: 1,
@@ -28,6 +30,7 @@ const adminState = {
   inprogressSortBy: 'date',       // Sort field: 'date', 'customer', 'package'
   inprogressSortOrder: 'asc',     // Sort direction: 'asc', 'desc'
   inprogressSearchTerm: '',       // Search term for filtering
+  inprogressRecentActive: false,  // Track if "Recent" button is active (toggle state)
 
   customersPage: 1,
   customersPageSize: 5,
@@ -1607,7 +1610,11 @@ function renderPendingBookingsTable(bookings) {
   const container = document.getElementById('pendingBookingsTable');
   if (!container) return;
 
-  if (bookings.length === 0) {
+  // Get auto-cancelled bookings from notification storage
+  const autoCancelledNotifications = JSON.parse(localStorage.getItem('autoCancelledNotifications') || '[]');
+  const showAutoCancelled = adminState.showAutoCancelledBookings !== false; // Default to true
+
+  if (bookings.length === 0 && autoCancelledNotifications.length === 0) {
     const searchInput = document.getElementById('pendingSearch');
     const searchTerm = searchInput ? searchInput.value : '';
     const message = searchTerm 
@@ -1625,38 +1632,58 @@ function renderPendingBookingsTable(bookings) {
 
   // Apply sorting
   const sortedBookings = [...bookings];
-  const sortBy = adminState.pendingSortBy || 'date';
-  const sortOrder = adminState.pendingSortOrder || 'asc';
+  const sortBy = adminState.pendingRecentActive ? 'recent' : (adminState.pendingSortBy || 'date');
+  const sortOrder = adminState.pendingSortOrder || 'desc'; // Default to descending (newest first)
   
-  console.log('[loadPendingBookings] Sorting with:', { sortBy, sortOrder, bookingsCount: bookings.length });
+  console.log('[loadPendingBookings] Sorting with:', { sortBy, sortOrder, recentActive: adminState.pendingRecentActive, bookingsCount: bookings.length });
 
   sortedBookings.sort((a, b) => {
     let aValue, bValue;
 
     switch (sortBy) {
+      case 'recent':
+        // Sort by creation date (newest first) - always descending, ignore sortOrder
+        aValue = new Date(a.createdAt || a.date).getTime();
+        bValue = new Date(b.createdAt || b.date).getTime();
+        return bValue - aValue;
+        
       case 'date':
+        // Sort by appointment date (accurate date comparison)
         aValue = new Date(a.date).getTime();
         bValue = new Date(b.date).getTime();
-        break;
+        if (aValue === bValue) {
+          // If same date, sort by time
+          const aTime = a.time ? parseInt(a.time.replace(/\D/g, '')) : 0;
+          const bTime = b.time ? parseInt(b.time.replace(/\D/g, '')) : 0;
+          return sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
+        }
+        // Return date comparison result
+        return sortOrder === 'asc' ? aValue - bValue : bValue - aValue;
+        
       case 'customer':
-        aValue = (a.customerName || '').toLowerCase();
-        bValue = (b.customerName || '').toLowerCase();
-        break;
-      case 'total':
-        aValue = a.totalPrice || a.cost?.subtotal || 0;
-        bValue = b.totalPrice || b.cost?.subtotal || 0;
-        break;
+        // Sort alphabetically by customer name (accurate alphabetical)
+        aValue = (a.customerName || 'Unknown').toLowerCase().trim();
+        bValue = (b.customerName || 'Unknown').toLowerCase().trim();
+        return sortOrder === 'asc' ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
+        
+      case 'pricing':
+        // Sort by total price (numeric)
+        aValue = parseFloat(a.totalPrice || a.cost?.subtotal || 0);
+        bValue = parseFloat(b.totalPrice || b.cost?.subtotal || 0);
+        return sortOrder === 'asc' ? aValue - bValue : bValue - aValue;
+        
       default:
+        // Default to date descending
         aValue = new Date(a.date).getTime();
         bValue = new Date(b.date).getTime();
     }
 
-    // Handle string comparisons
+    // Handle string comparisons (for customer names)
     if (typeof aValue === 'string' && typeof bValue === 'string') {
       return sortOrder === 'asc' ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
     }
 
-    // Handle numeric comparisons
+    // Handle numeric comparisons (for dates and pricing)
     if (sortOrder === 'asc') {
       return aValue - bValue;
     } else {
@@ -1683,16 +1710,19 @@ function renderPendingBookingsTable(bookings) {
 
   // Add sort controls
   html += `
-    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm);">
+    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm); flex-wrap: wrap;">
+      <button class="btn btn-sm" style="background: ${adminState.pendingRecentActive ? '#007bff' : '#e0e0e0'}; color: ${adminState.pendingRecentActive ? 'white' : '#333'}; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 600;" onclick="togglePendingRecent()">
+        🕐 Recent
+      </button>
       <label for="pendingSortField" style="font-size: 0.9rem; color: var(--gray-600); font-weight: 500;">Sort by:</label>
-      <select id="pendingSortField" class="form-select" style="width: auto; padding: 0.5rem;" onchange="changePendingSortField(this.value)">
-        <option value="date" ${adminState.pendingSortBy === 'date' ? 'selected' : ''}>Date</option>
-        <option value="customer" ${adminState.pendingSortBy === 'customer' ? 'selected' : ''}>Customer</option>
-        <option value="total" ${adminState.pendingSortBy === 'total' ? 'selected' : ''}>Total</option>
+      <select id="pendingSortField" class="form-select" style="width: auto; padding: 0.5rem; ${adminState.pendingRecentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changePendingSortField(this.value)" ${adminState.pendingRecentActive ? 'disabled' : ''}>
+        <option value="date" ${adminState.pendingSortBy === 'date' ? 'selected' : ''}>📅 Date (Appointment)</option>
+        <option value="customer" ${adminState.pendingSortBy === 'customer' ? 'selected' : ''}>👤 Customer (A-Z)</option>
+        <option value="pricing" ${adminState.pendingSortBy === 'pricing' ? 'selected' : ''}>💰 Pricing</option>
       </select>
-      <select id="pendingSortOrder" class="form-select" style="width: auto; padding: 0.5rem;" onchange="changePendingSortOrder(this.value)">
-        <option value="asc" ${adminState.pendingSortOrder === 'asc' ? 'selected' : ''}>Ascending</option>
-        <option value="desc" ${adminState.pendingSortOrder === 'desc' ? 'selected' : ''}>Descending</option>
+      <select id="pendingSortOrder" class="form-select" style="width: auto; padding: 0.5rem; ${adminState.pendingRecentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changePendingSortOrder(this.value)" ${adminState.pendingRecentActive ? 'disabled' : ''}>
+        <option value="asc" ${adminState.pendingSortOrder === 'asc' ? 'selected' : ''}>⬆️ Ascending</option>
+        <option value="desc" ${adminState.pendingSortOrder === 'desc' ? 'selected' : ''}>⬇️ Descending</option>
       </select>
     </div>
   `;
@@ -1803,11 +1833,9 @@ function renderPendingBookingsTable(bookings) {
                     Actions ▼
                   </button>
                   <div class="action-dropdown-menu" style="position: absolute; top: 100%; right: 0; background: white; border: 1px solid var(--gray-300); border-radius: var(--radius-sm); box-shadow: var(--shadow); z-index: 10; min-width: 180px;">
-                    ${booking.packageId !== 'single-service' ? `
                     <button class="action-dropdown-item" onclick="protectedOpenAddBookingFeeModal('${booking.id}'); closeActionDropdown(this)">
                       💰 Add Booking Fee
                     </button>
-                    ` : ''}
                     <button class="action-dropdown-item" onclick="protectedConfirmBooking('${booking.id}'); closeActionDropdown(this)">
                       ✅ Confirm
                     </button>
@@ -1828,6 +1856,73 @@ function renderPendingBookingsTable(bookings) {
     </div>
     <div id="${controlsId}"></div>
   `;
+
+  // ============================================
+  // AUTO-CANCELLED BOOKINGS SECTION
+  // ============================================
+  // Display auto-cancelled bookings below pending bookings
+  // Includes: banner, filter toggle, separate table
+  // ============================================
+  if (autoCancelledNotifications.length > 0) {
+    html += `
+      <div style="margin-top: 2rem; padding-top: 2rem; border-top: 2px solid var(--gray-300);">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem;">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <span style="font-size: 1.5rem;">⚠️</span>
+            <div>
+              <h3 style="margin: 0; color: #d32f2f; font-size: 1.1rem;">Auto-Cancelled Bookings</h3>
+              <p style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: var(--gray-600);">${autoCancelledNotifications.length} booking${autoCancelledNotifications.length > 1 ? 's' : ''} auto-cancelled (appointment time passed)</p>
+            </div>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn btn-outline btn-sm" onclick="toggleAutoCancelledDisplay()" style="border-color: #d32f2f; color: #d32f2f;">
+              ${showAutoCancelled ? '👁️ Hide' : '👁️ Show'}
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="clearAutoCancelledNotifications()" style="border-color: #d32f2f; color: #d32f2f;">
+              🗑️ Clear All
+            </button>
+          </div>
+        </div>
+
+        ${showAutoCancelled ? `
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Pet</th>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>Cancellation Reason</th>
+                  <th>Cancelled At</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${autoCancelledNotifications.map(cancelled => `
+                  <tr style="background: #ffebee; opacity: 0.9;">
+                    <td>${escapeHtml(cancelled.customerName || 'Unknown')}</td>
+                    <td>${escapeHtml(cancelled.petName || 'Unknown')}</td>
+                    <td>${formatDate(cancelled.date)}</td>
+                    <td>${formatTime(cancelled.time)}</td>
+                    <td>
+                      <span style="background: #ffcdd2; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.85rem; color: #c62828;">
+                        ${escapeHtml(cancelled.reason || 'System auto-cancelled')}
+                      </span>
+                    </td>
+                    <td style="font-size: 0.85rem; color: var(--gray-600);">${formatDate(new Date(cancelled.cancelledAt).toISOString().split('T')[0])}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : `
+          <div style="padding: 1rem; background: #fff3e0; border-radius: var(--radius-sm); text-align: center; color: var(--gray-600);">
+            <p style="margin: 0;">Click "Show" to view auto-cancelled bookings</p>
+          </div>
+        `}
+      </div>
+    `;
+  }
 
   container.innerHTML = html;
 
@@ -1851,17 +1946,50 @@ window.changePendingPageSize = function (size) {
 window.changePendingSortField = function (field) {
   console.log('[changePendingSortField] Changing sort field to:', field);
   adminState.pendingSortBy = field;
+  adminState.pendingRecentActive = false; // Disable Recent when changing sort field
   adminState.pendingPage = 1;
-  console.log('[changePendingSortField] New adminState:', { sortBy: adminState.pendingSortBy, sortOrder: adminState.pendingSortOrder });
+  console.log('[changePendingSortField] New adminState:', { sortBy: adminState.pendingSortBy, sortOrder: adminState.pendingSortOrder, recentActive: adminState.pendingRecentActive });
   loadPendingBookings();
 };
 
 window.changePendingSortOrder = function (order) {
   console.log('[changePendingSortOrder] Changing sort order to:', order);
   adminState.pendingSortOrder = order;
+  adminState.pendingRecentActive = false; // Disable Recent when changing sort order
   adminState.pendingPage = 1;
-  console.log('[changePendingSortOrder] New adminState:', { sortBy: adminState.pendingSortBy, sortOrder: adminState.pendingSortOrder });
+  console.log('[changePendingSortOrder] New adminState:', { sortBy: adminState.pendingSortBy, sortOrder: adminState.pendingSortOrder, recentActive: adminState.pendingRecentActive });
   loadPendingBookings();
+};
+
+// Toggle Recent button (on/off)
+window.togglePendingRecent = function () {
+  console.log('[togglePendingRecent] Toggling Recent from:', adminState.pendingRecentActive);
+  adminState.pendingRecentActive = !adminState.pendingRecentActive;
+  adminState.pendingPage = 1;
+  console.log('[togglePendingRecent] Recent is now:', adminState.pendingRecentActive);
+  loadPendingBookings();
+};
+
+// ============================================
+// AUTO-CANCELLED BOOKINGS FUNCTIONS
+// ============================================
+// Toggle display of auto-cancelled bookings
+window.toggleAutoCancelledDisplay = function () {
+  adminState.showAutoCancelledBookings = !adminState.showAutoCancelledBookings;
+  loadPendingBookings();
+};
+
+// Clear all auto-cancelled notifications
+window.clearAutoCancelledNotifications = function () {
+  if (confirm('Are you sure you want to clear all auto-cancelled booking records? This cannot be undone.')) {
+    localStorage.removeItem('autoCancelledNotifications');
+    adminState.showAutoCancelledBookings = true;
+    loadPendingBookings();
+    
+    if (typeof customAlert !== 'undefined') {
+      customAlert.success('Cleared', 'All auto-cancelled booking records have been removed');
+    }
+  }
 };
 
 // Confirmed bookings cache
@@ -1927,33 +2055,41 @@ function renderConfirmedBookingsTable() {
   }
 
   // Apply sorting
-  const sortBy = adminState.confirmedSortBy || 'date';
+  const sortBy = adminState.confirmedRecentActive ? 'recent' : (adminState.confirmedSortBy || 'date');
   const sortOrder = adminState.confirmedSortOrder || 'asc';
 
   filteredBookings.sort((a, b) => {
     let valA, valB;
     switch (sortBy) {
+      case 'recent':
+        // Sort by creation date (newest first) - always descending, ignore sortOrder
+        valA = new Date(a.createdAt || a.date).getTime();
+        valB = new Date(b.createdAt || b.date).getTime();
+        return valB - valA; // Always descending for recent
       case 'customer':
         valA = (a.customerName || '').toLowerCase();
         valB = (b.customerName || '').toLowerCase();
-        break;
+        return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       case 'package':
         valA = (a.packageName || '').toLowerCase();
         valB = (b.packageName || '').toLowerCase();
-        break;
+        return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       case 'total':
         valA = a.totalPrice || a.cost?.subtotal || 0;
         valB = b.totalPrice || b.cost?.subtotal || 0;
-        break;
+        return sortOrder === 'asc' ? valA - valB : valB - valA;
       case 'date':
       default:
-        valA = new Date(a.date + ' ' + (a.time || '00:00'));
-        valB = new Date(b.date + ' ' + (b.time || '00:00'));
-        break;
+        valA = new Date(a.date).getTime();
+        valB = new Date(b.date).getTime();
+        if (valA === valB) {
+          // If same date, sort by time
+          const aTime = a.time ? parseInt(a.time.replace(/\D/g, '')) : 0;
+          const bTime = b.time ? parseInt(b.time.replace(/\D/g, '')) : 0;
+          return sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
+        }
+        return sortOrder === 'asc' ? valA - valB : valB - valA;
     }
-    if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
-    if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
-    return 0;
   });
 
   // Pagination logic
@@ -1992,17 +2128,20 @@ function renderConfirmedBookingsTable() {
       </div>
     </div>
 
-    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm);">
+    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm); flex-wrap: wrap;">
+      <button class="btn btn-sm" style="background: ${sortBy === 'recent' ? '#007bff' : '#e0e0e0'}; color: ${sortBy === 'recent' ? 'white' : '#333'}; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 600;" onclick="toggleConfirmedRecent()">
+        🕐 Recent
+      </button>
       <label style="font-size: 0.9rem; color: var(--gray-600); font-weight: 500;">Sort by:</label>
-      <select class="form-select" style="width: auto; padding: 0.5rem;" onchange="changeConfirmedSortField(this.value)">
-        <option value="date" ${sortBy === 'date' ? 'selected' : ''}>Date</option>
-        <option value="customer" ${sortBy === 'customer' ? 'selected' : ''}>Customer</option>
-        <option value="package" ${sortBy === 'package' ? 'selected' : ''}>Package</option>
-        <option value="total" ${sortBy === 'total' ? 'selected' : ''}>Total</option>
+      <select class="form-select" style="width: auto; padding: 0.5rem; ${adminState.confirmedRecentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changeConfirmedSortField(this.value)" ${adminState.confirmedRecentActive ? 'disabled' : ''}>
+        <option value="date" ${sortBy === 'date' ? 'selected' : ''}>📅 Date (Appointment)</option>
+        <option value="customer" ${sortBy === 'customer' ? 'selected' : ''}>👤 Customer (A-Z)</option>
+        <option value="package" ${sortBy === 'package' ? 'selected' : ''}>📦 Package</option>
+        <option value="total" ${sortBy === 'total' ? 'selected' : ''}>💰 Pricing</option>
       </select>
-      <select class="form-select" style="width: auto; padding: 0.5rem;" onchange="changeConfirmedSortOrder(this.value)">
-        <option value="asc" ${sortOrder === 'asc' ? 'selected' : ''}>Ascending</option>
-        <option value="desc" ${sortOrder === 'desc' ? 'selected' : ''}>Descending</option>
+      <select class="form-select" style="width: auto; padding: 0.5rem; ${adminState.confirmedRecentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changeConfirmedSortOrder(this.value)" ${adminState.confirmedRecentActive ? 'disabled' : ''}>
+        <option value="asc" ${sortOrder === 'asc' ? 'selected' : ''}>⬆️ Ascending</option>
+        <option value="desc" ${sortOrder === 'desc' ? 'selected' : ''}>⬇️ Descending</option>
       </select>
     </div>
   `;
@@ -2093,6 +2232,9 @@ function renderConfirmedBookingsTable() {
                     <button class="action-dropdown-item" onclick="protectedOpenCancelModal('${booking.id}'); closeActionDropdown(this)">
                       ❌ Cancel
                     </button>
+                    <button class="action-dropdown-item" onclick="openNoShowModal('${booking.id}'); closeActionDropdown(this)" style="color: #dc3545; font-weight: 600;">
+                      ⚠️ Mark No-show
+                    </button>
                   </div>
                 </div>
               </td>
@@ -2132,12 +2274,21 @@ window.searchConfirmedBookings = function(query) {
 
 window.changeConfirmedSortField = function(field) {
   adminState.confirmedSortBy = field;
+  adminState.confirmedRecentActive = false; // Disable Recent when changing sort field
   adminState.confirmedPage = 1;
   renderConfirmedBookingsTable();
 };
 
 window.changeConfirmedSortOrder = function(order) {
   adminState.confirmedSortOrder = order;
+  adminState.confirmedRecentActive = false; // Disable Recent when changing sort order
+  adminState.confirmedPage = 1;
+  renderConfirmedBookingsTable();
+};
+
+// Toggle Recent button (on/off)
+window.toggleConfirmedRecent = function () {
+  adminState.confirmedRecentActive = !adminState.confirmedRecentActive;
   adminState.confirmedPage = 1;
   renderConfirmedBookingsTable();
 };
@@ -2624,33 +2775,62 @@ window.changeCustomersPage = function(page) {
   renderCustomerTable();
 };
 
+// Protection flags for customer management
+let isAddingWarning = false;
+let isBanningCustomer = false;
+
 async function handleAddWarning(userId) {
-  const users = await getUsers();
-  const user = users.find(u => u.id === userId);
-  if (!user) return;
-  const reason = prompt(`Reason for warning for ${user.name}?`, 'No-show / late cancellation');
-  if (reason === null) return;
-  const info = await incrementCustomerWarning(userId, reason.trim() || 'Admin issued warning');
-  customAlert.info(`${user.name} now has ${info?.warnings || 0}/5 warnings.`);
-  await loadCustomerManagement();
-  renderBlockedCustomersPanel();
-  renderLiftBanPanel();
+  // Prevent duplicate clicks
+  if (isAddingWarning) {
+    console.log('[handleAddWarning] BLOCKED - Already in progress');
+    return;
+  }
+  isAddingWarning = true;
+  
+  try {
+    const users = await getUsers();
+    const user = users.find(u => u.id === userId);
+    if (!user) return;
+    const reason = prompt(`Reason for warning for ${user.name}?`, 'No-show / late cancellation');
+    if (reason === null) return;
+    const info = await incrementCustomerWarning(userId, reason.trim() || 'Admin issued warning');
+    customAlert.info(`${user.name} now has ${info?.warnings || 0}/5 warnings.`);
+    await loadCustomerManagement();
+    renderBlockedCustomersPanel();
+    renderLiftBanPanel();
+  } finally {
+    isAddingWarning = false;
+  }
 }
 
 async function handleBanCustomer(userId) {
+  // Prevent duplicate clicks
+  if (isBanningCustomer) {
+    console.log('[handleBanCustomer] BLOCKED - Already in progress');
+    return;
+  }
+  
   const users = await getUsers();
   const user = users.find(u => u.id === userId);
   if (!user) return;
   const reason = prompt(`Why ban ${user.name}?`, 'Exceeded warning limit');
   if (reason === null) return;
+  
   customAlert.confirm('Confirm', `Ban ${user.name}? They will be blocked from booking until lifted.`).then(async (confirmed) => {
     if (!confirmed) return;
-
-    await banCustomer(userId, reason.trim() || 'Admin manual ban');
-    customAlert.error(`${user.name} has been banned.`);
-    await loadCustomerManagement();
-    renderBlockedCustomersPanel();
-    renderLiftBanPanel();
+    
+    if (isBanningCustomer) return;
+    isBanningCustomer = true;
+    
+    try {
+      await banCustomer(userId, reason.trim() || 'Admin manual ban');
+      customAlert.error(`${user.name} has been banned.`);
+      await loadCustomerManagement();
+      renderBlockedCustomersPanel();
+      renderLiftBanPanel();
+    } finally {
+      isBanningCustomer = false;
+    }
   });
 }
 
@@ -2664,9 +2844,27 @@ async function openBookingDetail(bookingId) {
 
   const packages = await getPackages();
   const pkg = packages.find(p => p.id === booking.packageId);
-  const history = getBookingHistory()
+  
+  // Get history from both sources:
+  // 1. getBookingHistory() - global activity log (now from Firebase)
+  // 2. booking.history - booking-specific history (includes payment history)
+  const globalHistory = (await getBookingHistory())
     .filter(entry => entry.bookingId === bookingId)
     .sort((a, b) => b.timestamp - a.timestamp);
+  
+  // Combine with booking.history (payment history)
+  const bookingPaymentHistory = (booking.history || [])
+    .map(entry => ({
+      ...entry,
+      bookingId: bookingId,
+      timestamp: entry.timestamp || Date.now()
+    }))
+    .sort((a, b) => b.timestamp - a.timestamp);
+  
+  // Merge and sort all history
+  const allHistory = [...globalHistory, ...bookingPaymentHistory]
+    .sort((a, b) => b.timestamp - a.timestamp);
+  
   const bookingCode = typeof getBookingDisplayCode === 'function'
     ? getBookingDisplayCode(booking)
     : booking.id;
@@ -2714,24 +2912,44 @@ async function openBookingDetail(bookingId) {
         ? 'badge-cancelled'
         : 'badge-pending';
 
-  const historyHtml = history.length
-    ? `<div class="history-list">${history.map(item => `
-        <div style="padding:0.5rem 0; border-bottom:1px dashed var(--gray-200);">
-          <strong>${new Date(item.timestamp).toLocaleString()}</strong><br>
-          <span style="color:var(--gray-600); text-transform:capitalize;">${escapeHtml(item.action)}</span> – ${escapeHtml(item.message || '')}
-        </div>
-      `).join('')}</div>`
+  const historyHtml = allHistory.length
+    ? `<div class="history-list">${allHistory.map(item => {
+        // Format payment history entries specially
+        if (item.action === 'payment_received' || item.action === 'payment_confirmed') {
+          return `
+            <div style="padding:0.75rem; border-bottom:1px dashed var(--gray-200); background: #e8f5e9; border-radius: 4px; margin-bottom: 0.5rem;">
+              <strong style="color: #2e7d32;">${new Date(item.timestamp).toLocaleString()}</strong><br>
+              <span style="color: #2e7d32; font-weight: 600; text-transform: capitalize;">
+                ${item.action === 'payment_received' ? '💰 Payment Received' : '✅ Payment Confirmed'}
+              </span><br>
+              <span style="color: #555; font-size: 0.9rem;">
+                Amount: ${formatCurrency(item.paymentAmount || 0)} | 
+                Method: ${item.paymentMethod === 'payNow' ? '💳 Pay Now' : '⏰ Pay Later'}
+              </span>
+              ${item.hasProofOfPayment ? `
+                <div style="margin-top: 0.5rem;">
+                  <button onclick="window.openAdminProofOfPaymentLightbox('${bookingId}')" 
+                    style="padding: 0.3rem 0.6rem; background: #2196F3; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8rem;">
+                    👁️ View Proof
+                  </button>
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }
+        // Regular history entries
+        return `
+          <div style="padding:0.5rem 0; border-bottom:1px dashed var(--gray-200);">
+            <strong>${new Date(item.timestamp).toLocaleString()}</strong><br>
+            <span style="color:var(--gray-600); text-transform:capitalize;">${escapeHtml(item.action)}</span> – ${escapeHtml(item.message || '')}
+          </div>
+        `;
+      }).join('')}</div>`
     : '<p class="empty-state" style="padding:1rem;">No history yet.</p>';
 
   // Groomer assignment section (only for pending bookings)
-  const groomerSection = booking.status === 'pending' && !booking.groomerId ? `
-    <div style="background: #fff3cd; padding: 1rem; border-radius: var(--radius-sm); margin: 1rem 0; border-left: 4px solid #ff9800;">
-      <p style="margin: 0 0 0.75rem 0; font-weight: 600; color: var(--gray-900);">⚠️ Groomer Not Assigned</p>
-      <p style="margin: 0; font-size: 0.9rem; color: var(--gray-700);">Assign a groomer before confirming this booking.</p>
-      <button class="btn btn-primary btn-sm" onclick="openGroomerAssignmentModal('${booking.id}')" style="margin-top: 0.75rem;">
-        Assign Groomer
-      </button>
-    </div>
+  const groomerSection = booking.status === 'pending' && booking.groomerId ? `
+    <p><strong>✓ Groomer:</strong> <span style="background: #e8f5e9; padding: 0.25rem 0.5rem; border-radius: 0.25rem; color: #2e7d32; font-weight: 600;">${escapeHtml(booking.groomerName)}</span></p>
   ` : (booking.status === 'In Progress' && booking.groomerId ? `
     <p><strong>✓ Groomer:</strong> <span style="background: #e8f5e9; padding: 0.25rem 0.5rem; border-radius: 0.25rem; color: #2e7d32; font-weight: 600;">${escapeHtml(booking.groomerName)}</span></p>
   ` : ``);
@@ -2775,7 +2993,7 @@ async function openBookingDetail(bookingId) {
                 <select id="addonSelect-${bookingId}" class="form-select" style="flex:1;">
                     ${addonOptions}
                 </select>
-                <button class="btn btn-primary btn-sm" onclick="handleAddonToBooking('${bookingId}')">Add</button>
+                <button class="btn btn-primary btn-sm" onclick="handleAddAddonToBooking('${bookingId}')">Add</button>
             </div>
             ${currentAddonsList}
             <p style="text-align: right; font-weight: 600; margin-top: 0.5rem; margin-bottom: 0;">Current Total: ${formatCurrency(remainingBalance)}</p>
@@ -2886,7 +3104,7 @@ async function openBookingDetail(bookingId) {
     <div class="modal-actions" style="flex-direction: column; align-items: stretch;">
       <div style="display: flex; gap: 0.5rem; justify-content: flex-end; flex-wrap: wrap;">
         ${booking.status === 'pending' && booking.groomerId ? `<button class="btn btn-success btn-sm" onclick="protectedConfirmBooking('${booking.id}')">Confirm</button>` : ''}
-        ${booking.status === 'pending' && !booking.groomerId ? `<button class="btn btn-success btn-sm" disabled style="opacity: 0.6;">Confirm (Assign groomer first)</button>` : ''}
+        ${booking.status === 'pending' && !booking.groomerId ? `<button class="btn btn-success btn-sm" onclick="protectedConfirmBooking('${booking.id}')">Confirm</button>` : ''}
         
         ${booking.status === 'confirmed' ? (() => {
           const today = new Date();
@@ -2907,7 +3125,7 @@ async function openBookingDetail(bookingId) {
         ${booking.beforeImage && booking.afterImage ? `<button class="btn ${booking.isFeatured ? 'btn-warning' : 'btn-secondary'} btn-sm" onclick="toggleFeature('${booking.id}')">${booking.isFeatured ? '⭐ Featured' : '☆ Feature This'}</button>` : ''}
         
         ${booking.status !== 'cancelledByAdmin' && booking.status !== 'cancelledByCustomer' && booking.status !== 'In Progress' ? `<button class="btn btn-secondary btn-sm" onclick="protectedOpenRescheduleModal('${booking.id}')">Reschedule</button>` : ''}
-        ${booking.status !== 'cancelledByAdmin' && booking.status !== 'cancelledByCustomer' && booking.status !== 'completed' ? `<button class="btn btn-secondary btn-sm" onclick="openNoShowModal('${booking.id}')">Mark No-show</button>` : ''}
+        ${booking.status === 'confirmed' ? `<button class="btn btn-secondary btn-sm" onclick="openNoShowModal('${booking.id}')">⚠ Mark No-show</button>` : ''}
         ${booking.status !== 'cancelledByAdmin' && booking.status !== 'cancelledByCustomer' && booking.status !== 'completed' ? `<button class="btn btn-danger btn-sm" onclick="protectedOpenCancelModal('${booking.id}')">Cancel</button>` : ''}
         <button class="btn btn-outline btn-sm" onclick="modalSystem.close()">Close</button>
       </div>
@@ -3394,9 +3612,9 @@ async function handleRescheduleSubmit(event, bookingId) {
     submitBtn.style.opacity = '0.6';
   }
   
-  // Show loading screen
-  if (typeof showLoadingOverlay === 'function') {
-    showLoadingOverlay('Rescheduling booking...');
+  // Show loading screen (lazy - non-blocking)
+  if (typeof showTableLoader === 'function') {
+    showTableLoader('#adminBookingsTable');
   }
   
   try {
@@ -3686,9 +3904,9 @@ async function handleMediaSubmit(bookingId) {
     saveBtn.style.opacity = '0.6';
   }
   
-  // Show loading screen
-  if (typeof showLoadingOverlay === 'function') {
-    showLoadingOverlay('Uploading gallery...');
+  // Show loading screen (lazy - non-blocking)
+  if (typeof showTableLoader === 'function') {
+    showTableLoader('#galleryContainer');
   }
   
   try {
@@ -3813,35 +4031,79 @@ function updateMediaPreview(previewId, src) {
   }
 }
 
+// Track if no-show submission is in progress
+let isNoShowInProgress = false;
+
 function openNoShowModal(bookingId) {
+  // Reset flag when opening modal
+  isNoShowInProgress = false;
+  
   showModal(`
     <h3>Mark as No-show</h3>
     <p style="color:var(--gray-600);">This will cancel the booking, log a warning, and notify the customer.</p>
     <div class="modal-actions">
-      <button class="btn btn-danger" onclick="handleNoShowSubmit('${bookingId}')">Mark No-show</button>
+      <button class="btn btn-danger" id="noShowSubmitBtn" onclick="handleNoShowSubmit('${bookingId}')">Mark No-show</button>
       <button class="btn btn-outline" onclick="modalSystem.close()">Close</button>
     </div>
   `);
 }
 
 async function handleNoShowSubmit(bookingId) {
-  const bookings = await getBookings();
-  const booking = bookings.find(b => b.id === bookingId);
-  if (!booking) return;
-  booking.status = 'Cancelled By Admin';
-  booking.cancellationNote = 'Marked as no-show by admin';
-  await saveBookings(bookings);
-  const warningInfo = await incrementCustomerWarning(booking.userId, `No Show on ${formatDate(booking.date)} at ${formatTime(booking.time)}`);
-  logBookingHistory({
-    bookingId,
-    action: 'No Show',
-    message: 'Marked as no-show, warning issued',
-    actor: 'Admin'
-  });
-  modalSystem.close();
-  switchView(currentView);
-  customAlert.warning(`No-show recorded. Customer warnings: ${warningInfo?.warnings || 0}/5`);
-  renderBlockedCustomersPanel();
+  // Prevent duplicate submissions
+  if (isNoShowInProgress) {
+    console.log('[handleNoShowSubmit] Already in progress, skipping');
+    return;
+  }
+  
+  isNoShowInProgress = true;
+  
+  // Disable button immediately
+  const submitBtn = document.getElementById('noShowSubmitBtn');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Processing...';
+  }
+  
+  try {
+    const bookings = await getBookings();
+    const booking = bookings.find(b => b.id === bookingId);
+    if (!booking) {
+      isNoShowInProgress = false;
+      return;
+    }
+    
+    // Check if already marked as no-show
+    if (booking.status === 'Cancelled By Admin' && booking.cancellationNote?.includes('no-show')) {
+      console.log('[handleNoShowSubmit] Booking already marked as no-show');
+      modalSystem.close();
+      customAlert.warning('Already Processed', 'This booking has already been marked as no-show.');
+      isNoShowInProgress = false;
+      return;
+    }
+    
+    booking.status = 'Cancelled By Admin';
+    booking.cancellationNote = 'Marked as no-show by admin';
+    await saveBookings(bookings);
+    
+    const warningInfo = await incrementCustomerWarning(booking.userId, `No Show on ${formatDate(booking.date)} at ${formatTime(booking.time)}`);
+    
+    logBookingHistory({
+      bookingId,
+      action: 'No Show',
+      message: 'Marked as no-show, warning issued',
+      actor: 'Admin'
+    });
+    
+    modalSystem.close();
+    switchView(currentView);
+    customAlert.warning(`No-show recorded. Customer warnings: ${warningInfo?.warnings || 0}/5`);
+    renderBlockedCustomersPanel();
+  } catch (error) {
+    console.error('[handleNoShowSubmit] Error:', error);
+    customAlert.error('Error', 'Failed to mark as no-show. Please try again.');
+  } finally {
+    isNoShowInProgress = false;
+  }
 }
 
 // Groomer absences
@@ -4211,13 +4473,18 @@ async function renderBookingHistory() {
   }
 
   // Apply sort based on sortBy field and sortOrder
-  const sortBy = adminHistoryState.sortBy || 'date';
+  const sortBy = adminHistoryState.recentActive ? 'recent' : (adminHistoryState.sortBy || 'date');
   const sortOrder = adminHistoryState.sortOrder || 'desc';
 
   history.sort((a, b) => {
     let aValue, bValue;
 
     switch (sortBy) {
+      case 'recent':
+        // Sort by timestamp (newest first) - always descending
+        aValue = a.timestamp;
+        bValue = b.timestamp;
+        return bValue - aValue;
       case 'date':
         aValue = a.timestamp;
         bValue = b.timestamp;
@@ -4277,18 +4544,21 @@ async function renderBookingHistory() {
       <div style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1rem;">
         <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
           <input type="text" id="historySearch" class="form-input" placeholder="🔍 Search by booking ID, customer, pet, or action..." style="flex: 1; min-width: 200px;" onkeyup="filterAdminHistory()">
+          <button class="btn btn-sm" style="background: ${adminHistoryState.recentActive ? '#007bff' : '#e0e0e0'}; color: ${adminHistoryState.recentActive ? 'white' : '#333'}; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 600;" onclick="toggleHistoryRecent()">
+            🕐 Recent
+          </button>
           <div style="display: flex; align-items: center; gap: 0.5rem;">
             <label for="historySortField" style="font-size: 0.9rem; color: var(--gray-600);">Sort by:</label>
-            <select id="historySortField" class="form-select" style="width: auto; padding: 0.5rem;" onchange="changeHistorySortField(this.value)">
-              <option value="date" ${adminHistoryState.sortBy === 'date' ? 'selected' : ''}>Date</option>
-              <option value="status" ${adminHistoryState.sortBy === 'status' ? 'selected' : ''}>Status</option>
-              <option value="customer" ${adminHistoryState.sortBy === 'customer' ? 'selected' : ''}>Customer</option>
-              <option value="amount" ${adminHistoryState.sortBy === 'amount' ? 'selected' : ''}>Amount</option>
+            <select id="historySortField" class="form-select" style="width: auto; padding: 0.5rem; ${adminHistoryState.recentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changeHistorySortField(this.value)" ${adminHistoryState.recentActive ? 'disabled' : ''}>
+              <option value="date" ${adminHistoryState.sortBy === 'date' ? 'selected' : ''}>📅 Date</option>
+              <option value="status" ${adminHistoryState.sortBy === 'status' ? 'selected' : ''}>📊 Status</option>
+              <option value="customer" ${adminHistoryState.sortBy === 'customer' ? 'selected' : ''}>👤 Customer</option>
+              <option value="amount" ${adminHistoryState.sortBy === 'amount' ? 'selected' : ''}>💰 Amount</option>
             </select>
           </div>
-          <select id="historySortOrder" class="form-select" style="width: auto; padding: 0.5rem;" onchange="changeHistorySortOrder(this.value)">
-            <option value="desc" ${adminHistoryState.sortOrder === 'desc' ? 'selected' : ''}>Newest First</option>
-            <option value="asc" ${adminHistoryState.sortOrder === 'asc' ? 'selected' : ''}>Oldest First</option>
+          <select id="historySortOrder" class="form-select" style="width: auto; padding: 0.5rem; ${adminHistoryState.recentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changeHistorySortOrder(this.value)" ${adminHistoryState.recentActive ? 'disabled' : ''}>
+            <option value="desc" ${adminHistoryState.sortOrder === 'desc' ? 'selected' : ''}>⬇️ Newest First</option>
+            <option value="asc" ${adminHistoryState.sortOrder === 'asc' ? 'selected' : ''}>⬆️ Oldest First</option>
           </select>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
@@ -4396,6 +4666,7 @@ window.filterAdminHistory = filterAdminHistory;
 // Change sort field for booking history
 function changeHistorySortField(field) {
   adminHistoryState.sortBy = field;
+  adminHistoryState.recentActive = false; // Disable Recent when changing sort field
   adminHistoryState.page = 1;  // Reset to page 1 when sort changes
   renderBookingHistory();
 }
@@ -4404,10 +4675,18 @@ window.changeHistorySortField = changeHistorySortField;
 // Change sort order for booking history
 function changeHistorySortOrder(order) {
   adminHistoryState.sortOrder = order;
+  adminHistoryState.recentActive = false; // Disable Recent when changing sort order
   adminHistoryState.page = 1;  // Reset to page 1 when sort changes
   renderBookingHistory();
 }
 window.changeHistorySortOrder = changeHistorySortOrder;
+
+// Toggle Recent button (on/off)
+window.toggleHistoryRecent = function () {
+  adminHistoryState.recentActive = !adminHistoryState.recentActive;
+  adminHistoryState.page = 1;
+  renderBookingHistory();
+};
 
 function getBookingForHistory(bookingId, bookings = []) {
   // Try exact ID match first
@@ -4585,12 +4864,6 @@ async function openAddBookingFeeModal(bookingId) {
     return;
   }
 
-  // Single service bookings have NO booking fee
-  if (booking.packageId === 'single-service') {
-    showCustomAlert('ℹ️ Single Service bookings have no booking fee. Customer pays only the service price.', 'info');
-    return;
-  }
-
   const bookingCode = typeof getBookingDisplayCode === 'function'
     ? getBookingDisplayCode(booking)
     : (booking.shortId || booking.id);
@@ -4708,9 +4981,6 @@ async function saveBookingFee(bookingId, subtotal) {
     return;
   }
 
-  // Show lazy loading
-  showTableLoader('#modalRoot');
-
   try {
     // Get bookings
     const bookings = await getBookings();
@@ -4742,6 +5012,30 @@ async function saveBookingFee(bookingId, subtotal) {
       booking.confirmedAt = new Date().toISOString();
     }
 
+    // ============================================
+    // 💳 PAYMENT HISTORY LOGGING
+    // ============================================
+    // Log payment (booking fee) to booking history
+    // Tracks: amount paid, timestamp, proof status
+    // ============================================
+    if (!booking.history) {
+      booking.history = [];
+    }
+
+    booking.history.push({
+      action: 'payment_received',
+      timestamp: Date.now(),
+      paymentMethod: booking.paymentChoice || 'unknown',
+      paymentAmount: booking.cost.bookingFee,
+      subtotal: subtotal,
+      bookingFee: booking.cost.bookingFee,
+      amountToPayOnArrival: booking.cost.amountToPayOnArrival,
+      totalAmount: booking.cost.subtotal,
+      hasProofOfPayment: !!booking.proofOfPaymentImage,
+      confirmedBy: 'admin',
+      message: `Payment received: ${formatCurrency(booking.cost.bookingFee)} (${booking.paymentChoice === 'payNow' ? 'Pay Now' : 'Pay Later'})`
+    });
+
     // Save to database
     saveBookings(bookings);
 
@@ -4772,9 +5066,6 @@ async function saveBookingFee(bookingId, subtotal) {
   } catch (error) {
     console.error('Error saving booking fee:', error);
     showCustomAlert(' Failed to save booking fee. Please try again.', 'error');
-  } finally {
-    // Hide loading
-    hideTableLoader('#modalRoot');
   }
 }
 
@@ -4813,9 +5104,9 @@ async function confirmBooking(bookingId) {
     }
   }
   
-  // Show loading screen
-  if (typeof showLoadingOverlay === 'function') {
-    showLoadingOverlay('Confirming booking...');
+  // Show loading screen (full-screen overlay)
+  if (typeof showGlobalLoader === 'function') {
+    showGlobalLoader('Confirming booking...');
   }
   
   try {
@@ -4823,18 +5114,6 @@ async function confirmBooking(bookingId) {
     const booking = bookings.find(b => b.id === bookingId);
 
     if (!booking) return;
-
-    // ============================================
-    // 🚫 VALIDATION: Groomer must be assigned
-    // ============================================
-    // Cannot confirm booking without groomer
-    // Opens groomer assignment modal if missing
-    // ============================================
-    if (!booking.groomerId) {
-      customAlert.warning('Missing Groomer', 'Please assign a groomer before confirming this booking.');
-      openGroomerAssignmentModal(bookingId);
-      return;
-    }
 
     // ============================================
     // 📝 UPDATE BOOKING STATUS
@@ -4897,6 +5176,30 @@ async function confirmBooking(bookingId) {
     // Calculate amount to pay on visit
     booking.cost.amountToPayOnArrival = Math.max(0, booking.cost.subtotal - booking.cost.bookingFee);
 
+    // ============================================
+    // 💳 PAYMENT HISTORY LOGGING
+    // ============================================
+    // Log payment confirmation to booking history
+    // Tracks: payment method, amount, timestamp
+    // ============================================
+    if (!booking.history) {
+      booking.history = [];
+    }
+
+    booking.history.push({
+      action: 'payment_confirmed',
+      timestamp: Date.now(),
+      paymentMethod: booking.paymentChoice || 'unknown',
+      paymentAmount: booking.cost.bookingFee || 0,
+      subtotal: booking.cost.subtotal,
+      bookingFee: booking.cost.bookingFee || 0,
+      amountToPayOnArrival: booking.cost.amountToPayOnArrival,
+      totalAmount: booking.cost.totalAmount,
+      hasProofOfPayment: !!booking.proofOfPaymentImage,
+      confirmedBy: 'admin',
+      message: `Payment confirmed - ${booking.paymentChoice === 'payNow' ? 'Pay Now' : 'Pay Later'} booking`
+    });
+
     await saveBookings(bookings);
     logBookingHistory({
       bookingId,
@@ -4904,11 +5207,13 @@ async function confirmBooking(bookingId) {
       message: `Confirmed and moved to In Progress with ${booking.groomerName} for ${formatDate(booking.date)} at ${formatTime(booking.time)}`,
       actor: 'Admin'
     });
-    modalSystem.close();
-
-    // Reload to in-progress view so user can see it
-    switchView('inprogress');
+    
+    // Show success alert first
     customAlert.success('Booking confirmed and moved to In Progress!');
+    
+    // Then close modal and switch view
+    modalSystem.close();
+    switchView('inprogress');
     
     // Release lock with success
     if (typeof releaseActionLock === 'function' && lockToken) {
@@ -4924,8 +5229,8 @@ async function confirmBooking(bookingId) {
     }
   } finally {
     // Hide loading screen
-    if (typeof hideLoadingOverlay === 'function') {
-      hideLoadingOverlay();
+    if (typeof hideGlobalLoader === 'function') {
+      hideGlobalLoader();
     }
   }
 }
@@ -5017,9 +5322,9 @@ async function submitGroomingNotes(bookingId) {
     submitBtn.style.opacity = '0.6';
   }
   
-  // Show loading screen
-  if (typeof showLoadingOverlay === 'function') {
-    showLoadingOverlay('Completing booking...');
+  // Show loading screen (lazy - non-blocking)
+  if (typeof showTableLoader === 'function') {
+    showTableLoader('#adminBookingsTable');
   }
   
   try {
@@ -5559,9 +5864,9 @@ async function submitAddonCreate(e) {
     submitBtn.style.opacity = '0.6';
   }
   
-  // Show loading screen
-  if (typeof showLoadingOverlay === 'function') {
-    showLoadingOverlay('Creating add-on...');
+  // Show loading screen (lazy - non-blocking)
+  if (typeof showTableLoader === 'function') {
+    showTableLoader('#addOnsTable');
   }
   
   try {
@@ -5690,9 +5995,9 @@ async function submitAddonEdit(e, id) {
     submitBtn.style.opacity = '0.6';
   }
   
-  // Show loading screen
-  if (typeof showLoadingOverlay === 'function') {
-    showLoadingOverlay('Updating add-on...');
+  // Show loading screen (lazy - non-blocking)
+  if (typeof showTableLoader === 'function') {
+    showTableLoader('#addOnsTable');
   }
   
   try {
@@ -5761,114 +6066,151 @@ window.addEditTierRow = addEditTierRow;
 // Booking Flow & Add-on Handlers
 // ============================================
 
+// Protection flags for service actions
+let isStartingService = false;
+let isCompletingService = false;
+
 async function handleStartService(bookingId) {
-  const bookings = await getBookings();
-  const booking = bookings.find(b => b.id === bookingId);
-  if (!booking) return;
-
-  console.log('[handleStartService] Booking:', bookingId, 'Opening groomer selection modal');
-
-  // 🔧 START SERVICE DATE VALIDATION: Only allow starting service on the booking date (TODAY)
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  
-  if (booking.date !== todayStr) {
-    const bookingDate = new Date(booking.date);
-    const formattedDate = bookingDate.toLocaleDateString('en-US', { 
-      weekday: 'long', 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
-    });
-    
-    if (booking.date > todayStr) {
-      // Future booking
-      await customAlert.warning(
-        'Cannot Start Service Yet', 
-        `This booking is scheduled for ${formattedDate}. You can only start the service on the appointment date.`
-      );
-    } else {
-      // Past booking
-      await customAlert.warning(
-        'Booking Date Has Passed', 
-        `This booking was scheduled for ${formattedDate}. The appointment date has already passed.`
-      );
-    }
+  // Prevent duplicate clicks
+  if (isStartingService) {
+    console.log('[handleStartService] BLOCKED - Already in progress');
     return;
   }
+  isStartingService = true;
+  
+  try {
+    const bookings = await getBookings();
+    const booking = bookings.find(b => b.id === bookingId);
+    if (!booking) return;
 
-  // ALWAYS show groomer selection modal when starting service
-  // Admin must select a groomer (with recommendation for fairness)
-  await openGroomerAssignmentModalForStartService(bookingId);
+    console.log('[handleStartService] Booking:', bookingId, 'Opening groomer selection modal');
+
+    // 🔧 START SERVICE DATE VALIDATION: Only allow starting service on the booking date (TODAY)
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    
+    if (booking.date !== todayStr) {
+      const bookingDate = new Date(booking.date);
+      const formattedDate = bookingDate.toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+      
+      if (booking.date > todayStr) {
+        // Future booking
+        await customAlert.warning(
+          'Cannot Start Service Yet', 
+          `This booking is scheduled for ${formattedDate}. You can only start the service on the appointment date.`
+        );
+      } else {
+        // Past booking
+        await customAlert.warning(
+          'Booking Date Has Passed', 
+          `This booking was scheduled for ${formattedDate}. The appointment date has already passed.`
+        );
+      }
+      return;
+    }
+
+    // ALWAYS show groomer selection modal when starting service
+    // Admin must select a groomer (with recommendation for fairness)
+    await openGroomerAssignmentModalForStartService(bookingId);
+  } finally {
+    isStartingService = false;
+  }
 }
 
 async function handleCompleteService(bookingId) {
+  // Prevent duplicate clicks
+  if (isCompletingService) {
+    console.log('[handleCompleteService] BLOCKED - Already in progress');
+    return;
+  }
+  
   const bookings = await getBookings();
   const booking = bookings.find(b => b.id === bookingId);
   if (!booking) return;
 
   customAlert.confirm('Complete Service', 'Are you sure you want to mark this as done?').then(async (confirmed) => {
     if (!confirmed) return;
+    
+    if (isCompletingService) return;
+    isCompletingService = true;
 
-    booking.status = 'completed';
-    booking.completedAt = toLocalISO(new Date());
-    await saveBookings(bookings);
+    try {
+      booking.status = 'completed';
+      booking.completedAt = toLocalISO(new Date());
+      await saveBookings(bookings);
 
-    logBookingHistory({
-      bookingId,
-      action: 'Completed',
-      message: 'Service marked as completed',
-      actor: 'Admin'
-    });
+      logBookingHistory({
+        bookingId,
+        action: 'Completed',
+        message: 'Service marked as completed',
+        actor: 'Admin'
+      });
 
-    modalSystem.close();
-    loadOverview(); // or whatever the current view is
-    customAlert.success('Booking completed successfully.');
+      modalSystem.close();
+      loadOverview(); // or whatever the current view is
+      customAlert.success('Booking completed successfully.');
+    } finally {
+      isCompletingService = false;
+    }
   });
 }
+
+// Protection flag for old addon function
+let isAddingAddonOld = false;
 
 async function handleAddonToBooking(bookingId) {
-  const select = document.getElementById(`addonSelect-${bookingId}`);
-  if (!select || !select.value) {
-    customAlert.warning('Please select an add-on first.');
+  // Prevent duplicate clicks
+  if (isAddingAddonOld) {
+    console.log('[handleAddonToBooking] BLOCKED - Already in progress');
     return;
   }
+  isAddingAddonOld = true;
+  
+  try {
+    const select = document.getElementById(`addonSelect-${bookingId}`);
+    if (!select || !select.value) {
+      customAlert.warning('Please select an add-on first.');
+      return;
+    }
 
-  const [id, label, priceStr] = select.value.split('|');
-  const price = parseFloat(priceStr);
-  const packages = await getPackages();
-  const addonPkg = packages.find(p => p.id === id);
-  const name = addonPkg ? (label === 'Base' ? addonPkg.name : `${addonPkg.name} - ${label}`) : 'Unknown Add-on';
+    const [id, label, priceStr] = select.value.split('|');
+    const price = parseFloat(priceStr);
+    const packages = await getPackages();
+    const addonPkg = packages.find(p => p.id === id);
+    const name = addonPkg ? (label === 'Base' ? addonPkg.name : `${addonPkg.name} - ${label}`) : 'Unknown Add-on';
 
-  const bookings = await getBookings();
-  const booking = bookings.find(b => b.id === bookingId);
-  if (!booking) return;
+    const bookings = await getBookings();
+    const booking = bookings.find(b => b.id === bookingId);
+    if (!booking) return;
 
-  if (!booking.addOns) booking.addOns = [];
+    if (!booking.addOns) booking.addOns = [];
+    
+    // Check for duplicate add-on
+    const isDuplicate = booking.addOns.some(addon => addon.id === id && addon.name === name);
+    if (isDuplicate) {
+      customAlert.warning('Duplicate Add-on', 'This add-on is already added to the booking.');
+      return;
+    }
 
-  booking.addOns.push({
-    id: id,
-    name: name,
-    price: price,
-    addedAt: Date.now()
-  });
+    booking.addOns.push({
+      id: id,
+      name: name,
+      price: price,
+      addedAt: Date.now()
+    });
 
-  recalculateBookingTotal(booking);
+    recalculateBookingTotal(booking);
 
-  await saveBookings(bookings);
-  openBookingDetail(bookingId); // Refresh modal
-}
-
-async function handleRemoveAddonFromBooking(bookingId, index) {
-  const bookings = await getBookings();
-  const booking = bookings.find(b => b.id === bookingId);
-  if (!booking || !booking.addOns) return;
-
-  booking.addOns.splice(index, 1);
-  recalculateBookingTotal(booking);
-
-  await saveBookings(bookings);
-  openBookingDetail(bookingId); // Refresh modal
+    await saveBookings(bookings);
+    openBookingDetail(bookingId); // Refresh modal
+  } finally {
+    isAddingAddonOld = false;
+  }
 }
 
 function recalculateBookingTotal(booking) {
@@ -5915,7 +6257,7 @@ window.handleStartService = handleStartService;
 window.assignGroomerToBookingAndStartService = assignGroomerToBookingAndStartService;
 window.handleCompleteService = handleCompleteService;
 window.handleAddonToBooking = handleAddonToBooking;
-window.handleRemoveAddonFromBooking = handleRemoveAddonFromBooking;
+// handleRemoveAddonFromBooking is defined and exported later in the file
 
 // ============================================
 // Mega Calendar Logic
@@ -6395,7 +6737,7 @@ window.renderInProgressBookingsTable = function (bookings) {
 
   // Apply sorting
   const sortedBookings = [...filteredBookings];
-  const sortBy = adminState.inprogressSortBy || 'date';
+  const sortBy = adminState.inprogressRecentActive ? 'recent' : (adminState.inprogressSortBy || 'date');
   const sortOrder = adminState.inprogressSortOrder || 'asc';
   
   console.log('[InProgress] Sorting by:', sortBy, 'Order:', sortOrder, 'Items:', sortedBookings.length);
@@ -6417,32 +6759,32 @@ window.renderInProgressBookingsTable = function (bookings) {
   sortedBookings.sort((a, b) => {
     let valA, valB;
     switch (sortBy) {
+      case 'recent':
+        // Sort by creation date (newest first) - always descending
+        valA = new Date(a.createdAt || a.date).getTime();
+        valB = new Date(b.createdAt || b.date).getTime();
+        return valB - valA;
       case 'customer':
         valA = (a.customerName || '').toLowerCase();
         valB = (b.customerName || '').toLowerCase();
-        break;
+        return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       case 'package':
         valA = (a.packageName || '').toLowerCase();
         valB = (b.packageName || '').toLowerCase();
-        break;
+        return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       case 'date':
       default:
         // Compare by date first, then by time
-        const dateA = a.date || '';
-        const dateB = b.date || '';
+        const dateA = new Date(a.date).getTime();
+        const dateB = new Date(b.date).getTime();
         if (dateA !== dateB) {
-          valA = dateA;
-          valB = dateB;
-        } else {
-          // Same date, compare by time
-          valA = parseTimeToMinutes(a.time);
-          valB = parseTimeToMinutes(b.time);
+          return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
         }
-        break;
+        // Same date, compare by time
+        valA = parseTimeToMinutes(a.time);
+        valB = parseTimeToMinutes(b.time);
+        return sortOrder === 'asc' ? valA - valB : valB - valA;
     }
-    if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
-    if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
-    return 0;
   });
 
   // Pagination
@@ -6478,15 +6820,18 @@ window.renderInProgressBookingsTable = function (bookings) {
     </div>
 
     <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm);">
+      <button class="btn btn-sm" style="background: ${sortBy === 'recent' ? '#007bff' : '#e0e0e0'}; color: ${sortBy === 'recent' ? 'white' : '#333'}; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 600;" onclick="toggleInprogressRecent()">
+        🕐 Recent
+      </button>
       <label style="font-size: 0.9rem; color: var(--gray-600); font-weight: 500;">Sort by:</label>
-      <select id="inprogressSortField" class="form-select" style="width: auto; padding: 0.5rem;" onchange="changeInprogressSortField(this.value)">
-        <option value="date" ${sortBy === 'date' ? 'selected' : ''}>Date</option>
-        <option value="customer" ${sortBy === 'customer' ? 'selected' : ''}>Customer</option>
-        <option value="package" ${sortBy === 'package' ? 'selected' : ''}>Package</option>
+      <select id="inprogressSortField" class="form-select" style="width: auto; padding: 0.5rem; ${adminState.inprogressRecentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changeInprogressSortField(this.value)" ${adminState.inprogressRecentActive ? 'disabled' : ''}>
+        <option value="date" ${sortBy === 'date' ? 'selected' : ''}>📅 Date (Appointment)</option>
+        <option value="customer" ${sortBy === 'customer' ? 'selected' : ''}>👤 Customer (A-Z)</option>
+        <option value="package" ${sortBy === 'package' ? 'selected' : ''}>📦 Package</option>
       </select>
-      <select id="inprogressSortOrder" class="form-select" style="width: auto; padding: 0.5rem;" onchange="changeInprogressSortOrder(this.value)">
-        <option value="asc" ${sortOrder === 'asc' ? 'selected' : ''}>Ascending</option>
-        <option value="desc" ${sortOrder === 'desc' ? 'selected' : ''}>Descending</option>
+      <select id="inprogressSortOrder" class="form-select" style="width: auto; padding: 0.5rem; ${adminState.inprogressRecentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changeInprogressSortOrder(this.value)" ${adminState.inprogressRecentActive ? 'disabled' : ''}>
+        <option value="asc" ${sortOrder === 'asc' ? 'selected' : ''}>⬆️ Ascending</option>
+        <option value="desc" ${sortOrder === 'desc' ? 'selected' : ''}>⬇️ Descending</option>
       </select>
     </div>
 
@@ -6522,7 +6867,6 @@ window.renderInProgressBookingsTable = function (bookings) {
               <button class="actions-menu-item" onclick="openSimpleBookingView('${booking.id}')">👁 View</button>
               <button class="actions-menu-item" onclick="openAddonsModal('${booking.id}')">🛁 Add-ons</button>
               <button class="actions-menu-item" onclick="showCustomAlert('Add Photos coming soon', 'info')">📸 Add Photos</button>
-              <button class="actions-menu-item" onclick="markNoShow('${booking.id}')">⚠ Mark No-show</button>
               <button class="actions-menu-item danger" onclick="protectedOpenCancelModal('${booking.id}')">✖ Cancel</button>
             </div>
           </div>
@@ -6557,6 +6901,7 @@ window.renderInProgressBookingsTable = function (bookings) {
 window.changeInprogressSortField = function (field) {
   console.log('[InProgress] Sort field changed to:', field);
   adminState.inprogressSortBy = field;
+  adminState.inprogressRecentActive = false; // Disable Recent when changing sort field
   adminState.inprogressPage = 1;
   loadInProgressBookings();
 };
@@ -6564,7 +6909,17 @@ window.changeInprogressSortField = function (field) {
 window.changeInprogressSortOrder = function (order) {
   console.log('[InProgress] Sort order changed to:', order);
   adminState.inprogressSortOrder = order;
+  adminState.inprogressRecentActive = false; // Disable Recent when changing sort order
   adminState.inprogressPage = 1;
+  loadInProgressBookings();
+};
+
+// Toggle Recent button (on/off)
+window.toggleInprogressRecent = function () {
+  console.log('[InProgress] Toggling Recent from:', adminState.inprogressRecentActive);
+  adminState.inprogressRecentActive = !adminState.inprogressRecentActive;
+  adminState.inprogressPage = 1;
+  console.log('[InProgress] Recent is now:', adminState.inprogressRecentActive);
   loadInProgressBookings();
 };
 
@@ -6631,9 +6986,9 @@ window.handleAddAddonToBooking = async function (bookingId) {
     addButton.textContent = 'Adding...';
   }
   
-  // Show loading overlay
-  if (typeof showLoadingOverlay === 'function') {
-    showLoadingOverlay('Adding add-on...');
+  // Show loading screen (lazy - non-blocking)
+  if (typeof showTableLoader === 'function') {
+    showTableLoader('#modalRoot');
   }
   
   try {
@@ -6665,6 +7020,21 @@ window.handleAddAddonToBooking = async function (bookingId) {
   // Initialize addOns array if not exists
   if (!booking.addOns) {
     booking.addOns = [];
+  }
+
+  // ============================================
+  // 🛡️ CHECK FOR DUPLICATE ADD-ON
+  // ============================================
+  // Prevent adding the same add-on twice
+  const addonAlreadyExists = booking.addOns.some(addon => 
+    addon.id === packageId && addon.name === (addonPkg.name + (tierLabel !== 'Base' ? ` - ${tierLabel}` : ''))
+  );
+
+  if (addonAlreadyExists) {
+    customAlert.warning(`This add-on is already added to the booking`);
+    isAddingAddon = false;
+    openAddonsModal(bookingId);
+    return;
   }
 
   // Add the new add-on
@@ -6701,15 +7071,15 @@ window.handleAddAddonToBooking = async function (bookingId) {
   await saveBookings(bookings);
 
   // Log activity
-  const history = getBookingHistory() || [];
-  history.push({
+  const bookingHistoryList = await getBookingHistory() || [];
+  bookingHistoryList.push({
     bookingId: bookingId,
     timestamp: Date.now(),
     action: 'Add-on Added',
     message: `Added: ${addonPkg.name}${tierLabel !== 'Base' ? ` - ${tierLabel}` : ''} (₱${price})`,
     actor: 'Admin'
   });
-  saveBookingHistory(history);
+  saveBookingHistory(bookingHistoryList);
 
     // Hide loading overlay
     if (typeof hideLoadingOverlay === 'function') {
@@ -6783,6 +7153,14 @@ window.handleRemoveAddonFromBooking = async function (bookingId, addonIndex) {
   isRemovingAddon = true;
   lastAddonRemoveTime = now;
   
+  // Disable all remove buttons to prevent multiple clicks
+  const removeButtons = document.querySelectorAll('[onclick*="handleRemoveAddonFromBooking"]');
+  removeButtons.forEach(btn => {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'not-allowed';
+  });
+  
   try {
     const bookings = await getBookings();
     const booking = bookings.find(b => b.id === bookingId);
@@ -6819,15 +7197,15 @@ window.handleRemoveAddonFromBooking = async function (bookingId, addonIndex) {
   await saveBookings(bookings);
 
   // Log activity
-  const history = getBookingHistory() || [];
-  history.push({
+  const bookingHistoryList = await getBookingHistory() || [];
+  bookingHistoryList.push({
     bookingId: bookingId,
     timestamp: Date.now(),
     action: 'Add-on Removed',
     message: `Removed: ${removedAddon.name} (₱${removedAddon.price})`,
     actor: 'Admin'
   });
-  saveBookingHistory(history);
+  saveBookingHistory(bookingHistoryList);
 
     // Show success message
     customAlert.success(`Add-on removed: ${removedAddon.name}`);
@@ -6844,52 +7222,6 @@ window.handleRemoveAddonFromBooking = async function (bookingId, addonIndex) {
     // ============================================
     isRemovingAddon = false;
   }
-};
-
-// Mark booking as No-show
-window.markNoShow = async function (bookingId) {
-  // Use protected action wrapper to prevent duplicates
-  await protectedAction(async () => {
-    if (!confirm('Mark this booking as No-show?')) return;
-
-    const bookings = await getBookings();
-    const booking = bookings.find(b => b.id === bookingId);
-
-    if (!booking) {
-      customAlert.error('Booking not found');
-      return;
-    }
-
-    // Update status
-    booking.status = 'no-show';
-
-    // Add to history
-    addToBookingHistory({
-      bookingId: booking.id,
-      action: 'marked_noshow',
-      message: `Booking marked as no-show by admin`,
-      timestamp: Date.now()
-    });
-
-    // Save
-    await saveBookings(bookings);
-
-    // Close modal if open
-    if (typeof modalSystem !== 'undefined' && modalSystem.isOpen) {
-      modalSystem.close();
-    }
-
-    // Reload current view
-    if (currentView === 'inprogress') {
-      loadInProgressBookings();
-    } else if (currentView === 'confirmed') {
-      loadConfirmedBookings();
-    } else if (currentView === 'overview') {
-      loadOverview();
-    }
-
-    customAlert.success('Booking marked as no-show');
-  }, 'markNoShow');
 };
 
 // OPEN ADD-ONS ONLY MODAL (No booking view)

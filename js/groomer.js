@@ -6,6 +6,7 @@ let groomerGroomerId = null;
 
 // Sort order state for groomer (must be declared before functions use them)
 let groomerBookingSortOrder = 'desc'; // 'desc' = newest first, 'asc' = oldest first
+let groomerBookingRecentActive = false; // Track if "Recent" button is active (toggle state)
 let groomerAbsenceSortOrder = 'desc';
 
 // Mobile navigation state
@@ -111,6 +112,13 @@ function closeGroomerMoreMenu() {
 // Change groomer booking sort order
 function changeGroomerBookingSortOrder(order) {
   groomerBookingSortOrder = order;
+  groomerBookingRecentActive = false; // Disable Recent when changing sort order
+  renderGroomerBookings();
+}
+
+// Toggle Recent button (on/off)
+function toggleGroomerRecent() {
+  groomerBookingRecentActive = !groomerBookingRecentActive;
   renderGroomerBookings();
 }
 
@@ -132,6 +140,7 @@ window.switchGroomerViewMobile = switchGroomerViewMobile;
 window.toggleGroomerMoreMenu = toggleGroomerMoreMenu;
 window.closeGroomerMoreMenu = closeGroomerMoreMenu;
 window.changeGroomerBookingSortOrder = changeGroomerBookingSortOrder;
+window.toggleGroomerRecent = toggleGroomerRecent;
 window.changeGroomerAbsenceSortOrder = changeGroomerAbsenceSortOrder;
 
 // ============================================
@@ -404,26 +413,42 @@ async function renderGroomerBookings() {
   const container = document.getElementById('groomerBookingsContainer');
   if (!container || !groomerGroomerId) return;
 
-  const bookings = (await getBookings()).filter(b =>
+  let bookings = (await getBookings()).filter(b =>
     b.groomerId === groomerGroomerId &&
     !['cancelled', 'cancelledByCustomer', 'cancelledByAdmin', 'cancelledBySystem'].includes(b.status)
-  ).sort((a, b) => {
-    const dateA = new Date(a.date + ' ' + a.time);
-    const dateB = new Date(b.date + ' ' + b.time);
-    // Apply sort order
-    if (groomerBookingSortOrder === 'asc') {
-      return dateA - dateB; // Oldest first
+  );
+
+  // Apply sorting
+  const sortBy = groomerBookingRecentActive ? 'recent' : 'date';
+  const sortOrder = groomerBookingSortOrder || 'desc';
+
+  bookings.sort((a, b) => {
+    if (sortBy === 'recent') {
+      // Sort by creation date (newest first) - always descending
+      const dateA = new Date(a.createdAt || a.date).getTime();
+      const dateB = new Date(b.createdAt || b.date).getTime();
+      return dateB - dateA;
+    } else {
+      // Sort by appointment date + time
+      const dateA = new Date(a.date + ' ' + (a.time || '00:00'));
+      const dateB = new Date(b.date + ' ' + (b.time || '00:00'));
+      if (sortOrder === 'asc') {
+        return dateA - dateB; // Oldest first
+      }
+      return dateB - dateA; // Newest first (default)
     }
-    return dateB - dateA; // Newest first (default)
   });
 
   // Sort controls HTML
   const sortControlsHtml = `
-    <div class="groomer-sort-controls">
-      <label>Sort by:</label>
-      <select id="groomerBookingSortSelect" onchange="changeGroomerBookingSortOrder(this.value)">
-        <option value="desc" ${groomerBookingSortOrder === 'desc' ? 'selected' : ''}>Newest First</option>
-        <option value="asc" ${groomerBookingSortOrder === 'asc' ? 'selected' : ''}>Oldest First</option>
+    <div class="groomer-sort-controls" style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--gray-50); border-radius: var(--radius-sm); flex-wrap: wrap;">
+      <button class="btn btn-sm" style="background: ${groomerBookingRecentActive ? '#007bff' : '#e0e0e0'}; color: ${groomerBookingRecentActive ? 'white' : '#333'}; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 600;" onclick="toggleGroomerRecent()">
+        🕐 Recent
+      </button>
+      <label style="font-size: 0.9rem; color: var(--gray-600); font-weight: 500;">Sort by:</label>
+      <select id="groomerBookingSortSelect" style="width: auto; padding: 0.5rem; ${groomerBookingRecentActive ? 'opacity: 0.5; pointer-events: none;' : ''}" onchange="changeGroomerBookingSortOrder(this.value)" ${groomerBookingRecentActive ? 'disabled' : ''}>
+        <option value="desc" ${sortOrder === 'desc' ? 'selected' : ''}>⬇️ Newest First</option>
+        <option value="asc" ${sortOrder === 'asc' ? 'selected' : ''}>⬆️ Oldest First</option>
       </select>
     </div>
   `;
@@ -532,6 +557,9 @@ async function renderGroomerStats(absences) {
   `;
 }
 
+// Protection flag for groomer profile update
+let isUpdatingGroomerProfile = false;
+
 async function setupGroomerProfileForm() {
   const form = document.getElementById('groomerProfileForm');
   if (!form || form.dataset.bound === 'true') return;
@@ -560,6 +588,20 @@ async function setupGroomerProfileForm() {
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    
+    // Prevent duplicate submissions
+    if (isUpdatingGroomerProfile) {
+      console.log('[setupGroomerProfileForm] BLOCKED - Already in progress');
+      return;
+    }
+    isUpdatingGroomerProfile = true;
+    
+    // Disable submit button
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Saving...';
+    }
 
     const nameInput = document.getElementById('groomerName');
     const specialtyInput = document.getElementById('groomerSpecialty');
@@ -569,6 +611,11 @@ async function setupGroomerProfileForm() {
 
     if (!name) {
       customAlert.warning('Missing Information', 'Please enter your name');
+      isUpdatingGroomerProfile = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Save Changes';
+      }
       return;
     }
 
@@ -627,6 +674,13 @@ async function setupGroomerProfileForm() {
     } catch (error) {
       console.error('Error updating profile:', error);
       customAlert.error('Update Failed', 'Failed to update profile. Please try again.');
+    } finally {
+      isUpdatingGroomerProfile = false;
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Save Changes';
+      }
     }
   });
 }

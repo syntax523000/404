@@ -1211,6 +1211,9 @@ async function checkAndCancelPendingBookings() {
     
     // Track cancelled bookings to release their slots
     const cancelledBookings = [];
+    
+    // Track auto-cancelled bookings for admin notification
+    const autoCancelledBookings = [];
 
     bookings.forEach(booking => {
       // ============================================
@@ -1352,6 +1355,17 @@ async function checkAndCancelPendingBookings() {
           date: bookingDate,
           time: bookingTime
         });
+        
+        // Track for admin notification
+        autoCancelledBookings.push({
+          id: booking.id,
+          customerName: booking.customerName,
+          petName: booking.petName,
+          date: bookingDate,
+          time: bookingTime,
+          reason: reason,
+          cancelledAt: Date.now()
+        });
       }
     });
 
@@ -1367,6 +1381,18 @@ async function checkAndCancelPendingBookings() {
       }
       
       console.log(`[AutoCancel] Saved ${cancelledBookings.length} cancelled booking(s)`);
+      
+      // Store auto-cancelled bookings for admin notification
+      if (autoCancelledBookings.length > 0) {
+        try {
+          const existingNotifications = JSON.parse(localStorage.getItem('autoCancelledNotifications') || '[]');
+          const newNotifications = [...existingNotifications, ...autoCancelledBookings];
+          localStorage.setItem('autoCancelledNotifications', JSON.stringify(newNotifications));
+          console.log(`[AutoCancel] Stored ${autoCancelledBookings.length} auto-cancelled notification(s) for admin`);
+        } catch (e) {
+          console.warn('[AutoCancel] Failed to store notifications:', e);
+        }
+      }
       
       // Release slots for all cancelled bookings
       for (const cancelled of cancelledBookings) {
@@ -1693,23 +1719,79 @@ function saveStaffAbsences(absences) {
   localStorage.setItem('staffAbsences', JSON.stringify(absences));
 }
 
-// Booking history helpers
-function getBookingHistory() {
+// Booking history helpers - Now uses Firebase instead of localStorage
+async function getBookingHistory() {
+  try {
+    // Try to get from Firebase first
+    if (typeof window.firebaseGetBookings === 'function') {
+      const bookings = await window.firebaseGetBookings();
+      if (Array.isArray(bookings)) {
+        // Flatten all booking.history entries into a single array
+        const allHistory = [];
+        bookings.forEach(booking => {
+          if (booking.history && Array.isArray(booking.history)) {
+            booking.history.forEach(entry => {
+              allHistory.push({
+                ...entry,
+                bookingId: booking.id
+              });
+            });
+          }
+        });
+        return allHistory;
+      }
+    }
+  } catch (error) {
+    console.warn('[getBookingHistory] Firebase fetch failed:', error.message);
+  }
+  
+  // Fallback to localStorage if Firebase fails
   return JSON.parse(localStorage.getItem('bookingHistory') || '[]');
 }
 
 function saveBookingHistory(history) {
-  localStorage.setItem('bookingHistory', JSON.stringify(history));
+  // No longer needed - history is saved with bookings in Firebase
+  // Kept for backward compatibility
+  console.log('[saveBookingHistory] Deprecated - history saved with bookings in Firebase');
 }
 
-function logBookingHistory(entry) {
-  const history = getBookingHistory();
+async function logBookingHistory(entry) {
+  try {
+    // Get the booking and add entry to its history array
+    if (typeof window.firebaseGetBookings === 'function' && entry.bookingId) {
+      const bookings = await window.firebaseGetBookings();
+      const booking = bookings.find(b => b.id === entry.bookingId);
+      
+      if (booking) {
+        if (!booking.history) {
+          booking.history = [];
+        }
+        
+        booking.history.push({
+          id: 'hist-' + Date.now(),
+          timestamp: Date.now(),
+          ...entry
+        });
+        
+        // Save back to Firebase
+        if (typeof window.firebaseSaveBookings === 'function') {
+          await window.firebaseSaveBookings(bookings);
+          return;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('[logBookingHistory] Firebase save failed:', error.message);
+  }
+  
+  // Fallback to localStorage if Firebase fails
+  const history = JSON.parse(localStorage.getItem('bookingHistory') || '[]');
   history.push({
     id: 'hist-' + Date.now(),
     timestamp: Date.now(),
     ...entry
   });
-  saveBookingHistory(history);
+  localStorage.setItem('bookingHistory', JSON.stringify(history));
 }
 
 function getCalendarBlackouts() {
@@ -1755,11 +1837,11 @@ function redirect(path) {
 // Format date for display
 function formatDate(dateString) {
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
+  // Return month abbreviation + day (e.g., "Dec 23", "Dec 24", "Dec 25")
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const month = monthNames[date.getMonth()];
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${month} ${day}`;
 }
 
 // Format time for display (convert 24-hour to 12-hour format)

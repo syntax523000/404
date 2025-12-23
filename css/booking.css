@@ -1336,25 +1336,6 @@
     font-weight: 600 !important;
     text-align: right !important;
   }
-
-  /* Grooming Cuts - 2x2 Grid on Mobile */
-  .cuts-carousel-wrapper {
-    display: grid !important;
-    grid-template-columns: repeat(2, 1fr) !important;
-    gap: 1rem !important;
-    overflow-x: visible !important;
-  }
-
-  .cuts-carousel-wrapper>div {
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-  }
-
-  /* Hide carousel nav buttons */
-  .cuts-carousel-btn {
-    display: none !important;
-  }
 }
 
 
